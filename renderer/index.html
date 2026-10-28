@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StartORBack — Пуск</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Segoe+UI:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body class="theme-win11">
+  <!-- Браузерный баннер — скрывается в Electron -->
+  <div id="preview-banner" class="preview-banner">
+    <div class="banner-content">
+      <span class="banner-icon">💡</span>
+      <div class="banner-text">
+        <strong>Предпросмотр StartORBack</strong>
+        <span>Это демо в браузере. На Windows установи и запусти <code>npm start</code> — меню появится оверлеем и исчезнет после закрытия программы, не меняя систему.</span>
+      </div>
+      <a class="banner-btn" href="#" id="banner-hide">Скрыть</a>
+    </div>
+  </div>
+
+  <!-- Обёртка для центрирования в превью -->
+  <div class="stage">
+    <div class="desktop-mock">
+      <!-- Фейковая панель задач для антуража (только в превью) -->
+      <div class="taskbar-mock">
+        <div class="taskbar-left">
+          <button class="taskbar-start active" id="taskbar-start" title="Пуск (Alt+Пробел)">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="currentColor"/><rect x="11" y="1" width="8" height="8" rx="1.5" fill="currentColor"/><rect x="1" y="11" width="8" height="8" rx="1.5" fill="currentColor"/><rect x="11" y="11" width="8" height="8" rx="1.5" fill="currentColor"/></svg>
+          </button>
+          <div class="taskbar-search-mock">🔍 Поиск</div>
+          <div class="taskbar-icons">
+            <span>💻</span><span>🌐</span><span>📁</span><span>🎵</span>
+          </div>
+        </div>
+        <div class="taskbar-right">
+          <span id="taskbar-clock">14:28</span>
+          <span>🔊</span><span>📶</span><span>🔋 87%</span>
+          <span id="taskbar-date">28 окт</span>
+        </div>
+      </div>
+
+      <!-- Само меню Пуск -->
+      <div class="start-menu" id="startMenu" role="dialog" aria-label="Меню Пуск">
+        <!-- WIN11 header search -->
+        <div class="menu-header">
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input id="searchInput" type="text" placeholder="Поиск приложений, файлов и настроек" autocomplete="off" spellcheck="false">
+            <button class="search-clear" id="searchClear" aria-label="Очистить">✕</button>
+            <kbd class="search-kbd">Ctrl+K</kbd>
+          </div>
+          <div class="header-actions">
+            <button class="icon-btn" id="btn-settings" title="Настройки StartORBack">⚙️</button>
+            <button class="icon-btn" id="btn-power" title="Питание">⏻</button>
+          </div>
+        </div>
+
+        <div class="menu-body">
+          <!-- Левая / центральная область -->
+          <div class="pane-main">
+            <div class="section">
+              <div class="section-head">
+                <h3>Закреплённые</h3>
+                <button class="link-btn" data-action="all-apps">Все приложения ›</button>
+              </div>
+              <div class="pinned-grid" id="pinnedGrid">
+                <!-- JS рендерит -->
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <h3>Рекомендуем</h3>
+                <button class="link-btn" id="btn-more-recent">Ещё ›</button>
+              </div>
+              <div class="recent-list" id="recentList"></div>
+            </div>
+
+            <!-- All Apps (скрытый по умолчанию, показывается при поиске/клике) -->
+            <div class="section all-apps-section hidden" id="allAppsSection">
+              <div class="section-head">
+                <h3>Все приложения</h3>
+                <button class="link-btn" id="btn-back-pinned">‹ Назад</button>
+              </div>
+              <div class="alphabet-nav" id="alphaNav"></div>
+              <div class="apps-list" id="appsList"></div>
+            </div>
+          </div>
+
+          <!-- Правая боковая панель — только для Win7/Win10, в Win11 скрыта -->
+          <div class="pane-side">
+            <div class="user-card">
+              <div class="avatar">А</div>
+              <div class="user-info">
+                <div class="user-name" id="userName">Алексей</div>
+                <div class="user-mail" id="userMail">alexey@startorback.local</div>
+              </div>
+              <button class="icon-btn small">⋯</button>
+            </div>
+
+            <nav class="side-nav" id="sideNav">
+              <a href="#" data-folder="documents"><span>📄</span> Документы</a>
+              <a href="#" data-folder="pictures"><span>🖼️</span> Изображения</a>
+              <a href="#" data-folder="downloads"><span>⬇️</span> Загрузки</a>
+              <a href="#" data-folder="music"><span>🎵</span> Музыка</a>
+              <a href="#" data-folder="videos"><span>🎬</span> Видео</a>
+              <a href="#" data-folder="settings"><span>⚙️</span> Параметры</a>
+              <a href="#" data-folder="power"><span>⏻</span> Питание</a>
+            </nav>
+
+            <div class="side-tiles" id="sideTiles">
+              <!-- плитки Win10 -->
+              <div class="tile large" style="--tile-bg:#0078d4"><span class="tile-icon">🌤️</span><span class="tile-title">Погода<br><b>14° Облачно</b></span></div>
+              <div class="tile" style="--tile-bg:#8764b8"><span class="tile-icon">📅</span><span class="tile-title">Календарь<br><b>28 октября</b></span></div>
+              <div class="tile" style="--tile-bg:#00b294"><span class="tile-icon">✉️</span><span class="tile-title">Почта<br><b>3 новых</b></span></div>
+              <div class="tile wide" style="--tile-bg:#e3008c"><span class="tile-icon">🎵</span><span class="tile-title">Spotify — Любимые треки</span></div>
+            </div>
+
+            <div class="side-footer">
+              <span id="liveClock">14:28:05</span>
+              <span class="dot">•</span>
+              <span>StartORBack</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="menu-footer">
+          <div class="footer-user">
+            <div class="avatar small">А</div>
+            <span id="footerUserName">Алексей</span>
+          </div>
+          <div class="footer-actions">
+            <button class="footer-btn" title="Блокировка"><span>🔒</span></button>
+            <button class="footer-btn" title="Параметры"><span>⚙️</span></button>
+            <button class="footer-btn power" title="Выключение"><span>⏻</span> <span class="hide-mobile">Завершение работы</span></button>
+          </div>
+        </div>
+
+        <!-- Подсказка внизу -->
+        <div class="menu-hint">
+          <span>ⓘ Работает только пока открыта программа. Закроешь — вернётся обычный Пуск. Никаких изменений в системе.</span>
+          <span class="hint-kbd"><kbd>Esc</kbd> скрыть · <kbd>Alt+Пробел</kbd> показать</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Панель настроек (выдвижная) -->
+    <div class="settings-panel" id="settingsPanel">
+      <div class="settings-head">
+        <h2>⚙️ Настройки StartORBack</h2>
+        <button class="icon-btn" id="settingsClose">✕</button>
+      </div>
+
+      <div class="settings-body">
+        <div class="setting-group">
+          <h4>Внешний вид</h4>
+          <label>Тема меню</label>
+          <div class="theme-picker" id="themePicker">
+            <button data-theme="win11" class="theme-card active">
+              <div class="theme-preview win11"></div>
+              <span>Windows 11<br><small>Центр, скругления, Mica</small></span>
+            </button>
+            <button data-theme="win10" class="theme-card">
+              <div class="theme-preview win10"></div>
+              <span>Windows 10<br><small>Плитки, тёмная панель</small></span>
+            </button>
+            <button data-theme="win7" class="theme-card">
+              <div class="theme-preview win7"></div>
+              <span>Windows 7<br><small>Классика Aero, две колонки</small></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <label>Акцентный цвет</label>
+          <div class="accent-row">
+            <button class="accent-dot active" data-color="#0078d4" style="background:#0078d4"></button>
+            <button class="accent-dot" data-color="#8764b8" style="background:#8764b8"></button>
+            <button class="accent-dot" data-color="#e3008c" style="background:#e3008c"></button>
+            <button class="accent-dot" data-color="#00b294" style="background:#00b294"></button>
+            <button class="accent-dot" data-color="#ff8c00" style="background:#ff8c00"></button>
+            <button class="accent-dot" data-color="#37474f" style="background:#37474f"></button>
+            <input type="color" id="accentCustom" value="#0078d4" title="Свой цвет">
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <label>Эффекты</label>
+          <div class="toggle-row">
+            <span>Размытие (Acrylic / Mica)</span>
+            <label class="switch"><input type="checkbox" id="toggleBlur" checked><span></span></label>
+          </div>
+          <div class="toggle-row">
+            <span>Прозрачность</span>
+            <input type="range" id="opacityRange" min="80" max="100" value="96">
+            <span id="opacityVal">96%</span>
+          </div>
+          <div class="toggle-row">
+            <span>Анимация появления</span>
+            <label class="switch"><input type="checkbox" id="toggleAnim" checked><span></span></label>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h4>Поведение</h4>
+          <div class="toggle-row"><span>Скрывать при клике вне меню</span><label class="switch"><input type="checkbox" id="toggleBlurHide" checked><span></span></label></div>
+          <div class="toggle-row"><span>Горячая клавиша <code>Alt+Пробел</code></span><span class="badge">включено</span></div>
+          <div class="hint-box">
+            <strong>Безопасный режим:</strong> программа не изменяет реестр, не подменяет <code>explorer.exe</code> и не требует прав администратора. Автозагрузка отключена по умолчанию — включи её вручную, если хочешь.
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h4>О программе</h4>
+          <div class="about-card">
+            <div class="about-title">StartORBack v1.0</div>
+            <div class="about-text">Лёгкая визуальная замена меню Пуск на Node.js + Electron. Идея как у StartIsBack, но без внедрения в систему — обычный оверлей, который живёт только пока запущен процесс.</div>
+            <div class="about-links">
+              <a href="#" data-link="github">GitHub</a>
+              <a href="#" data-link="readme">Как установить</a>
+              <a href="#" data-link="exit">Выход</a>
+            </div>
+            <div class="about-meta">Платформа: <span id="aboutPlatform">browser</span> · Пользователь: <span id="aboutUser">—</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Затемнение при открытых настройках -->
+    <div class="backdrop" id="backdrop"></div>
+  </div>
+
+  <!-- Тост -->
+  <div class="toast" id="toast"></div>
+
+<script src="renderer.js"></script>
+</body>
+</html>
