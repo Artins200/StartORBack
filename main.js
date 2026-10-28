@@ -418,7 +418,15 @@ function createWindow() {
   mainWindow.on('blur', () => {
     setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) hideMenu(); } catch {} }, 120);
   });
-  mainWindow.on('hide', () => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.clearHistory(); } catch {} });
+  mainWindow.on('hide', () => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const wc = mainWindow.webContents;
+        if (wc.navigationHistory && typeof wc.navigationHistory.clear === 'function') wc.navigationHistory.clear();
+        else if (typeof wc.clearHistory === 'function') wc.clearHistory();
+      }
+    } catch {}
+  });
 }
 
 function showMenu() {
