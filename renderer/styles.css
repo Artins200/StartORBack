@@ -385,3 +385,14 @@ body.is-electron .preview-banner, body.is-electron .desktop-mock{ display:none }
 body.is-electron .stage{ padding:0; background: transparent; min-height:100vh; align-items:flex-end; justify-content:flex-start }
 body.is-electron .start-menu{ position:relative; left:auto; right:auto; bottom:auto; transform:none; margin: 0; animation: slideUp .24s }
 body.is-electron{ background: transparent; overflow:hidden }
+
+/* ── Performance & a11y hardening ─────────────────────────────── */
+.start-menu{ contain: layout style paint; will-change: transform, opacity; }
+.pane-main{ contain: content; }
+.pinned-grid, .apps-list, .recent-list{ content-visibility: auto; contain-intrinsic-size: 400px; }
+.app-card, .app-row, .recent-item{ contain: layout paint; }
+@media (prefers-reduced-motion: reduce){
+  .start-menu{ animation:none !important; transition:none !important; }
+  .app-card, .icon-btn, .taskbar-start{ transition:none !important; }
+}
+

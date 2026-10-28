@@ -1,7 +1,7 @@
 {
   "name": "startorback",
-  "version": "1.0.0",
-  "description": "StartORBack — визуальная замена меню Пуск для Windows. Работает только пока запущена программа, не лезет в систему, не требует прав администратора.",
+  "version": "2.0.0",
+  "description": "StartORBack — hardened визуальная замена меню Пуск. CSP+sandbox+rate-limit, без прав админа, только оверлей.",
   "main": "main.js",
   "author": "StartORBack",
   "license": "MIT",
@@ -11,15 +11,25 @@
     "start": "electron .",
     "preview": "node preview-server.js",
     "dev": "node preview-server.js",
-    "pack": "electron-builder --dir",
-    "postinstall": "echo 'StartORBack готов. Запусти: npm run preview для браузера или npm start в Windows с Electron'"
+    "audit": "npm audit --audit-level=high",
+    "pack": "electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^45.1.0"
   },
-  "dependencies": {},
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["start-menu", "windows", "electron", "startisback", "overlay"]
+  "overrides": {
+    "extract-zip": "^2.0.1"
+  },
+  "keywords": [
+    "start-menu",
+    "windows",
+    "electron",
+    "hardened",
+    "csp",
+    "sandbox",
+    "overlay"
+  ]
 }

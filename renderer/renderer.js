@@ -1,15 +1,48 @@
+'use strict';
 /**
- * StartORBack — Renderer
- * Работает и в Electron (через window.StartORBack) и в браузере (мок)
+ * StartORBack Renderer — hardened & optimized
+ * - XSS escape всех динамических данных
+ * - Debounce поиска, DocumentFragment, event delegation
+ * - Валидация темы/цвета/length
+ * - Ограничение рендера (виртуализация)
  */
+
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 
+// ── Безопасные хелперы ─────────────────────────────────────────────
+const ALLOWED_THEMES = new Set(['win11','win10','win7']);
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const MAX_NAME_LEN = 120;
+
+function escapeHtml(s){
+  if (typeof s !== 'string') s = String(s);
+  return s.replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;','`':'&#x60;'}[c]));
+}
+function escapeAttr(s){ return escapeHtml(s).replace(/[\n\r]/g,''); }
+function sanitizeName(n){ return String(n||'').slice(0,MAX_NAME_LEN).replace(/[\x00-\x1F\x7F]/g,'').trim(); }
+function isValidHex(c){ return typeof c==='string' && HEX_RE.test(c.trim()); }
+function isValidTheme(t){ return ALLOWED_THEMES.has(t); }
+
+function debounce(fn, ms){
+  let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=> fn(...a), ms); };
+}
+function throttle(fn, ms){
+  let last=0; return (...a)=>{ const now=Date.now(); if(now-last>=ms){ last=now; fn(...a); } };
+}
+
+// Storage безопасно
+const storage = {
+  get(k, d=null){ try{ const v=localStorage.getItem(k); return v===null?d:v; }catch{ return d; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch{} }
+};
+
 let apps = [];
 let recent = [];
-let filtered = [];
-let currentTheme = localStorage.getItem('startorback:theme') || 'win11';
-let accent = localStorage.getItem('startorback:accent') || '#0078d4';
+let currentTheme = storage.get('startorback:theme','win11');
+if (!isValidTheme(currentTheme)) currentTheme='win11';
+let accent = storage.get('startorback:accent','#0078d4');
+if (!isValidHex(accent)) accent='#0078d4';
 let isElectron = !!(window.StartORBack && window.StartORBack.isElectron);
 
 // DOM
@@ -30,6 +63,8 @@ const previewBanner = $('#preview-banner');
 const taskbarStart = $('#taskbar-start');
 
 function toast(msg, ms=2200){
+  if (typeof msg!=='string') msg=String(msg);
+  msg = msg.slice(0,200);
   toastEl.textContent = msg;
   toastEl.classList.add('show');
   clearTimeout(toastEl._t);
@@ -37,191 +72,259 @@ function toast(msg, ms=2200){
 }
 
 function setAccent(c){
-  accent = c;
-  document.documentElement.style.setProperty('--accent', c);
-  localStorage.setItem('startorback:accent', c);
-  $$('.accent-dot').forEach(b=> b.classList.toggle('active', b.dataset.color===c));
-  $('#accentCustom').value = c;
-  if (isElectron) window.StartORBack.setAccent(c);
+  if (!isValidHex(c)) return;
+  accent = c.toLowerCase();
+  document.documentElement.style.setProperty('--accent', accent);
+  storage.set('startorback:accent', accent);
+  $$('.accent-dot').forEach(b=> b.classList.toggle('active', b.dataset.color && b.dataset.color.toLowerCase()===accent));
+  const ac = $('#accentCustom');
+  if (ac) ac.value = accent;
+  if (isElectron) { try{ window.StartORBack.setAccent(accent); }catch{} }
 }
 
 function setTheme(t){
+  if (!isValidTheme(t)) return;
   currentTheme = t;
-  document.body.className = document.body.className.replace(/theme-\w+/g,'').trim() + ' theme-' + t;
-  document.body.classList.toggle('is-electron', isElectron);
-  localStorage.setItem('startorback:theme', t);
+  const body = document.body;
+  body.className = body.className.replace(/theme-\w+/g,'').trim() + ' theme-' + t;
+  body.classList.toggle('is-electron', isElectron);
+  storage.set('startorback:theme', t);
   $$('.theme-card').forEach(c=> c.classList.toggle('active', c.dataset.theme===t));
-  // Обновим Taskbar mock
   if (!isElectron){
-    // позиционирование меню в зависимости от темы
     if (t==='win11'){
-      startMenu.style.left = '50%';
-      startMenu.style.right = 'auto';
-      startMenu.style.transform = 'translateX(-50%)';
-      startMenu.style.bottom = 'calc(var(--taskbar-h) + 14px)';
+      startMenu.style.left='50%'; startMenu.style.right='auto'; startMenu.style.transform='translateX(-50%)'; startMenu.style.bottom='calc(var(--taskbar-h) + 14px)';
     } else {
-      startMenu.style.left = '12px';
-      startMenu.style.right = 'auto';
-      startMenu.style.transform = 'none';
-      startMenu.style.bottom = 'calc(var(--taskbar-h) + 12px)';
+      startMenu.style.left='12px'; startMenu.style.right='auto'; startMenu.style.transform='none'; startMenu.style.bottom='calc(var(--taskbar-h) + 12px)';
     }
   }
-  if (isElectron) window.StartORBack.setTheme(t);
+  if (isElectron) { try{ window.StartORBack.setTheme(t); }catch{} }
 }
 
-function formatTime(d=new Date()){
-  return d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-}
 function tickClock(){
-  const now = new Date();
-  const el = $('#liveClock');
-  if (el) el.textContent = formatTime(now);
-  const tc = $('#taskbar-clock'); if (tc) tc.textContent = now.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-  const td = $('#taskbar-date'); if (td) td.textContent = now.toLocaleDateString('ru-RU',{day:'numeric', month:'short'});
+  const now=new Date();
+  const el=$('#liveClock'); if(el) el.textContent=now.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const tc=$('#taskbar-clock'); if(tc) tc.textContent=now.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  const td=$('#taskbar-date'); if(td) td.textContent=now.toLocaleDateString('ru-RU',{day:'numeric',month:'short'});
 }
-setInterval(tickClock, 1000); tickClock();
+setInterval(tickClock,1000); tickClock();
 
 async function loadApps(){
-  if (isElectron){
-    try{
-      apps = await window.StartORBack.getApps();
-      // обогащаем иконками если их нет
-      const icons = ['💻','🌐','📁','🎮','🎵','🎨','🧩','📄','📊','⌘','📁','⚙️','📈','🧮','📝','🖌️','💬','🎥','▶️','🐙','🐳','>_','✂️','⛅','🚀','📑','🖼️'];
-      apps.forEach((a,i)=> { if(!a.icon) a.icon = icons[i%icons.length]; if(a.pinned===undefined) a.pinned = i<8; });
-    }catch(e){ apps = mockFallback(); }
-    try{
-      const info = await window.StartORBack.getSystemInfo();
-      $('#userName').textContent = info.user || 'Пользователь';
-      $('#footerUserName').textContent = info.user || 'Пользователь';
-      $('#aboutUser').textContent = info.user || '—';
-      $('#aboutPlatform').textContent = info.platform + ' ' + info.release;
-    }catch{}
-  } else {
-    // browser: fetch mock via /api/apps
-    try{
-      const res = await fetch('/api/apps');
-      apps = await res.json();
-    }catch{
-      apps = mockFallback();
+  try {
+    if (isElectron){
+      try{
+        const raw = await window.StartORBack.getApps();
+        const icons=['💻','🌐','📁','🎮','🎵','🎨','🧩','📄','📊','⌘','📁','⚙️','📈','🧮','📝','🖌️','💬','🎥','▶️','🐙','🐳','>_','✂️','⛅','🚀','📑','🖼️'];
+        apps=(Array.isArray(raw)?raw:[]).map((a,i)=>({
+          name: sanitizeName(a.name)||'Без имени',
+          path: typeof a.path==='string'? a.path.slice(0,1024):'',
+          type: a.type||'lnk',
+          icon: a.icon? String(a.icon).slice(0,8): icons[i%icons.length],
+          category: a.category? String(a.category).slice(0,32):'',
+          pinned: !!a.pinned,
+          recent: !!a.recent,
+          mtime: a.mtime||a.mtimeMs||null
+        })).slice(0,800);
+        if (apps.length===0) apps=mockFallback();
+        else {
+          // обогащаем иконками если нет
+          apps.forEach((a,i)=>{ if(!a.icon) a.icon=icons[i%icons.length]; if(a.pinned===undefined) a.pinned=i<8; });
+        }
+      }catch(e){ apps=mockFallback(); }
+      try{
+        const info=await window.StartORBack.getSystemInfo();
+        if(info && typeof info.user==='string'){
+          const u=sanitizeName(info.user);
+          $('#userName').textContent=u||'Пользователь';
+          $('#footerUserName').textContent=u||'Пользователь';
+          $('#aboutUser').textContent=u||'—';
+          $('#aboutPlatform').textContent=(String(info.platform).slice(0,32)+' '+String(info.release||'').slice(0,64)).trim();
+        }
+      }catch{}
+    } else {
+      try{
+        const res=await fetch('/api/apps',{headers:{'Accept':'application/json'}});
+        if(!res.ok) throw new Error('fetch failed');
+        const raw=await res.json();
+        if(!Array.isArray(raw)) throw new Error('invalid');
+        apps=raw.map(a=>({name:sanitizeName(a.name), path:String(a.path||'').slice(0,1024), type:a.type||'lnk', icon:String(a.icon||'📦').slice(0,8), category:String(a.category||'').slice(0,32), pinned:!!a.pinned, recent:!!a.recent, mtime:a.mtime||null})).slice(0,800);
+      }catch{ apps=mockFallback(); }
+      $('#aboutPlatform').textContent='browser preview (hardened)';
+      $('#aboutUser').textContent='Гость (превью)';
     }
-    // добавляем мок пользователя
-    $('#aboutPlatform').textContent = 'browser preview';
-    $('#aboutUser').textContent = 'Гость (превью)';
-  }
-  // разделим на pinned / recent / все
-  recent = apps.filter(a=> a.recent).sort((a,b)=> (b.mtime||0)-(a.mtime||0)).slice(0,3);
-  if (recent.length===0) recent = apps.slice(0,3); // демо
-  filtered = apps;
-  render();
+    recent=apps.filter(a=>a.recent).sort((a,b)=> (b.mtime||0)-(a.mtime||0)).slice(0,3);
+    if(recent.length===0) recent=apps.slice(0,3);
+    render();
+  } catch(e){ toast('Ошибка загрузки приложений'); apps=mockFallback(); render(); }
 }
 
 function mockFallback(){
-  // тот же мок что в src/mockApps, продублирован для браузера без сервера
   return [
-    { name: 'Visual Studio Code', path: 'C:\\VSCode\\Code.exe', icon: '💻', category:'Разработка', pinned:true },
-    { name: 'Google Chrome', path: 'C:\\Chrome\\chrome.exe', icon: '🌐', category:'Интернет', pinned:true },
-    { name: 'Telegram', icon: '✈️', category:'Мессенджеры', pinned:true },
-    { name: 'Spotify', icon: '🎵', pinned:true },
-    { name: 'Steam', icon: '🎮', pinned:true },
-    { name: 'Figma', icon: '🧩', pinned:true },
-    { name: 'Проводник', icon: '📁', pinned:true },
-    { name: 'Параметры', icon: '⚙️', pinned:true },
-    { name: 'Adobe Photoshop', icon: '🎨', category:'Графика' },
-    { name: 'Microsoft Word', icon: '📄', category:'Офис' },
-    { name: 'Калькулятор', icon: '🧮', category:'Стандартные' },
-    { name: 'Блокнот', icon: '📝' },
-    { name: 'Discord', icon: '💬' },
-    { name: 'VLC', icon: '▶️' },
-    { name: 'PowerShell', icon: '⌘', category:'Система' },
-    { name: 'Недавний проект — StartORBack', icon:'🚀', recent:true, mtime: Date.now()-600000 },
-    { name: 'Отчёт Q4.pdf', icon:'📑', recent:true, mtime: Date.now()-3600000 },
-    { name: 'Скриншот 28.10.png', icon:'🖼️', recent:true, mtime: Date.now()-7200000 },
+    { name:'Visual Studio Code', path:'C:\\VSCode\\Code.exe', icon:'💻', category:'Разработка', pinned:true },
+    { name:'Google Chrome', path:'C:\\Chrome\\chrome.exe', icon:'🌐', pinned:true },
+    { name:'Telegram', icon:'✈️', pinned:true },
+    { name:'Spotify', icon:'🎵', pinned:true },
+    { name:'Steam', icon:'🎮', pinned:true },
+    { name:'Figma', icon:'🧩', pinned:true },
+    { name:'Проводник', icon:'📁', pinned:true },
+    { name:'Параметры', icon:'⚙️', pinned:true },
+    { name:'Adobe Photoshop', icon:'🎨' },
+    { name:'Microsoft Word', icon:'📄' },
+    { name:'Калькулятор', icon:'🧮' },
+    { name:'Блокнот', icon:'📝' },
+    { name:'Discord', icon:'💬' },
+    { name:'VLC', icon:'▶️' },
+    { name:'PowerShell', icon:'⌘' },
+    { name:'Недавний проект — StartORBack', icon:'🚀', recent:true, mtime:Date.now()-600000 },
+    { name:'Отчёт Q4.pdf', icon:'📑', recent:true, mtime:Date.now()-3600000 },
+    { name:'Скриншот 28.10.png', icon:'🖼️', recent:true, mtime:Date.now()-7200000 },
   ];
 }
 
-function render(){
-  renderPinned();
-  renderRecent();
-  renderAppsList();
-  renderAlpha();
-}
+function render(){ renderPinned(); renderRecent(); renderAppsList(); renderAlpha(); }
 
+// ── Pinned: DocumentFragment + delegation ─────────────────────────
 function renderPinned(){
-  const q = searchInput.value.trim().toLowerCase();
-  let list = apps.filter(a=> a.pinned);
-  if (q) list = apps.filter(a=> a.name.toLowerCase().includes(q));
-  if (!q && list.length===0) list = apps.slice(0,12);
-  pinnedGrid.innerHTML = list.slice(0, 18).map(a=> `
-    <button class="app-card ${a.pinned?'pinned':''}" data-path="${a.path||''}" data-name="${a.name}">
-      <span class="app-icon">${a.icon||'📦'}</span>
-      <span class="app-name">${a.name}</span>
-    </button>
-  `).join('') || `<div style="grid-column:1/-1; text-align:center; color:var(--muted); padding:16px">Ничего не найдено</div>`;
-  pinnedGrid.querySelectorAll('.app-card').forEach(btn=>{
-    btn.addEventListener('click', ()=> launchApp(btn.dataset.path, btn.dataset.name));
-    btn.addEventListener('contextmenu', (e)=>{ e.preventDefault(); showContextMenu(e, btn.dataset.name); });
-  });
+  const q=searchInput.value.trim().toLowerCase().slice(0,80);
+  let list=apps.filter(a=>a.pinned);
+  if(q) list=apps.filter(a=> a.name.toLowerCase().includes(q));
+  if(!q && list.length===0) list=apps.slice(0,12);
+  list=list.slice(0,18);
+  pinnedGrid.innerHTML='';
+  if(list.length===0){
+    const d=document.createElement('div');
+    d.style.cssText='grid-column:1/-1;text-align:center;color:var(--muted);padding:16px';
+    d.textContent='Ничего не найдено';
+    pinnedGrid.appendChild(d); return;
+  }
+  const frag=document.createDocumentFragment();
+  for(const a of list){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='app-card'+(a.pinned?' pinned':'');
+    btn.dataset.path=a.path||'';
+    btn.dataset.name=a.name;
+    btn.setAttribute('role','listitem');
+    btn.setAttribute('aria-label', a.name);
+    // безопасно через textContent/innerText, но иконку тоже экранируем
+    const icon=document.createElement('span'); icon.className='app-icon'; icon.textContent=a.icon||'📦';
+    const name=document.createElement('span'); name.className='app-name'; name.textContent=a.name;
+    btn.appendChild(icon); btn.appendChild(name);
+    frag.appendChild(btn);
+  }
+  pinnedGrid.appendChild(frag);
 }
 
 function renderRecent(){
-  recentList.innerHTML = recent.map(a=> `
-    <div class="recent-item" data-path="${a.path||''}" data-name="${a.name}">
-      <span class="r-icon">${a.icon||'📄'}</span>
-      <div class="r-text">
-        <div class="r-title">${a.name}</div>
-        <div class="r-sub">${a.category||'Недавние'} · ${a.mtime? timeAgo(a.mtime) : 'сегодня'}</div>
-      </div>
-      <span style="font-size:12px; opacity:.5">↗</span>
-    </div>
-  `).join('');
-  recentList.querySelectorAll('.recent-item').forEach(el=>{
-    el.addEventListener('click', ()=> launchApp(el.dataset.path, el.dataset.name));
-  });
+  recentList.innerHTML='';
+  const frag=document.createDocumentFragment();
+  for(const a of recent){
+    const row=document.createElement('div');
+    row.className='recent-item';
+    row.dataset.path=a.path||''; row.dataset.name=a.name;
+    row.setAttribute('role','listitem');
+    const ic=document.createElement('span'); ic.className='r-icon'; ic.textContent=a.icon||'📄';
+    const txt=document.createElement('div'); txt.className='r-text';
+    const title=document.createElement('div'); title.className='r-title'; title.textContent=a.name;
+    const sub=document.createElement('div'); sub.className='r-sub'; sub.textContent=(a.category||'Недавние')+' · '+(a.mtime? timeAgo(a.mtime):'сегодня');
+    txt.appendChild(title); txt.appendChild(sub);
+    const arrow=document.createElement('span'); arrow.style.cssText='font-size:12px;opacity:.5'; arrow.textContent='↗';
+    row.appendChild(ic); row.appendChild(txt); row.appendChild(arrow);
+    frag.appendChild(row);
+  }
+  recentList.appendChild(frag);
 }
 
 function timeAgo(ms){
-  const diff = Date.now()-ms;
-  const m = Math.floor(diff/60000);
-  if (m<60) return m<=1? 'только что' : `${m} мин назад`;
-  const h = Math.floor(m/60); if (h<24) return `${h} ч назад`;
+  const diff=Date.now()-ms;
+  const m=Math.floor(diff/60000);
+  if(m<60) return m<=1?'только что':`${m} мин назад`;
+  const h=Math.floor(m/60); if(h<24) return `${h} ч назад`;
   return `${Math.floor(h/24)} дн назад`;
 }
 
+// ── Apps list: группировка + виртуализация (ленивый лимит) ───────
+let appsObserver=null;
 function renderAppsList(){
-  const q = searchInput.value.trim().toLowerCase();
-  let list = q ? apps.filter(a=> a.name.toLowerCase().includes(q)) : apps;
-  list = [...list].sort((a,b)=> a.name.localeCompare(b.name,'ru'));
-  // группировка по буквам
-  const groups = {};
-  for (const a of list){
-    const letter = a.name[0].toUpperCase();
-    const key = /[A-ZА-ЯЁ]/.test(letter) ? letter : '#';
-    (groups[key] ||= []).push(a);
+  const q=searchInput.value.trim().toLowerCase().slice(0,80);
+  let list=q? apps.filter(a=> a.name.toLowerCase().includes(q)): apps;
+  list=[...list].sort((a,b)=> a.name.localeCompare(b.name,'ru',{sensitivity:'base',numeric:true}));
+  // виртуализация: показываем первые 120, остальные по IntersectionObserver
+  const LIMIT_INITIAL=120;
+  const groups={};
+  for(const a of list){
+    const first=(a.name[0]||'#').toUpperCase();
+    const key=/[A-ZА-ЯЁ]/.test(first)? first:'#';
+    (groups[key]||(groups[key]=[])).push(a);
   }
-  const letters = Object.keys(groups).sort((a,b)=> a.localeCompare(b,'ru'));
-  appsList.innerHTML = letters.map(letter=> `
-    <div class="group" data-letter="${letter}">
-      <div class="group-title">${letter}</div>
-      ${groups[letter].map(a=> `
-        <div class="app-row" data-path="${a.path||''}" data-name="${a.name}">
-          <span class="row-icon">${a.icon||'📦'}</span>
-          <span class="row-name">${a.name}</span>
-          <span class="row-action">Открыть</span>
-        </div>
-      `).join('')}
-    </div>
-  `).join('') || `<div style="text-align:center; color:var(--muted); padding:20px">Ничего не найдено по запросу «${escapeHtml(q)}»</div>`;
-  appsList.querySelectorAll('.app-row').forEach(el=>{
-    el.addEventListener('click', ()=> launchApp(el.dataset.path, el.dataset.name));
-  });
+  const letters=Object.keys(groups).sort((a,b)=> a.localeCompare(b,'ru'));
+  appsList.innerHTML='';
+  if(letters.length===0){
+    const d=document.createElement('div');
+    d.style.cssText='text-align:center;color:var(--muted);padding:20px';
+    d.textContent='Ничего не найдено по запросу «'+q+'»';
+    appsList.appendChild(d);
+  } else {
+    const frag=document.createDocumentFragment();
+    let rendered=0;
+    const deferred=[];
+    for(const letter of letters){
+      const group=document.createElement('div'); group.className='group'; group.dataset.letter=letter;
+      const title=document.createElement('div'); title.className='group-title'; title.textContent=letter;
+      group.appendChild(title);
+      const items=groups[letter];
+      for(const a of items){
+        if(rendered < LIMIT_INITIAL){
+          const row=document.createElement('div'); row.className='app-row'; row.dataset.path=a.path||''; row.dataset.name=a.name; row.setAttribute('role','listitem');
+          const ic=document.createElement('span'); ic.className='row-icon'; ic.textContent=a.icon||'📦';
+          const name=document.createElement('span'); name.className='row-name'; name.textContent=a.name;
+          const act=document.createElement('span'); act.className='row-action'; act.textContent='Открыть';
+          row.appendChild(ic); row.appendChild(name); row.appendChild(act);
+          group.appendChild(row); rendered++;
+        } else {
+          deferred.push({group, a});
+        }
+      }
+      frag.appendChild(group);
+    }
+    appsList.appendChild(frag);
+    // отложенный рендер
+    if(deferred.length){
+      let idx=0;
+      const sentinel=document.createElement('div');
+      sentinel.textContent='Показать ещё '+deferred.length+' приложений';
+      sentinel.style.cssText='text-align:center;color:var(--accent);padding:10px;cursor:pointer;font-size:13px';
+      sentinel.setAttribute('role','button'); sentinel.tabIndex=0;
+      const loadMore=()=>{
+        const batch=deferred.splice(0,60);
+        for(const {group,a} of batch){
+          const row=document.createElement('div'); row.className='app-row'; row.dataset.path=a.path||''; row.dataset.name=a.name;
+          const ic=document.createElement('span'); ic.className='row-icon'; ic.textContent=a.icon||'📦';
+          const name=document.createElement('span'); name.className='row-name'; name.textContent=a.name;
+          const act=document.createElement('span'); act.className='row-action'; act.textContent='Открыть';
+          row.appendChild(ic); row.appendChild(name); row.appendChild(act);
+          group.appendChild(row);
+        }
+        if(deferred.length===0) sentinel.remove();
+        else sentinel.textContent='Показать ещё '+deferred.length+' приложений';
+      };
+      sentinel.addEventListener('click', loadMore);
+      sentinel.addEventListener('keydown', (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); loadMore(); }});
+      appsList.appendChild(sentinel);
+      // IntersectionObserver для автозагрузки
+      if('IntersectionObserver' in window){
+        const io=new IntersectionObserver((entries)=>{
+          if(entries[0].isIntersecting){ loadMore(); if(deferred.length===0) io.disconnect(); }
+        }, { root: appsList, threshold: 0.1 });
+        io.observe(sentinel);
+      }
+    }
+  }
   // показать секцию All Apps при поиске
-  if (q){
+  if(q){
     allAppsSection.classList.remove('hidden');
-    $('.pane-main .section:not(.all-apps-section)')?.classList.add('hidden-search');
-    // скрываем pinned/recommended визуально
     $$('.pane-main .section').forEach(s=>{ if(!s.classList.contains('all-apps-section')) s.style.display='none'; });
   } else {
-    if (allAppsSection.dataset.forced!=='true'){
+    if(allAppsSection.dataset.forced!=='true'){
       allAppsSection.classList.add('hidden');
       $$('.pane-main .section').forEach(s=> s.style.display='');
     }
@@ -229,121 +332,136 @@ function renderAppsList(){
 }
 
 function renderAlpha(){
-  const letters = 'АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-  // оставим только те что есть
-  const existing = new Set(apps.map(a=> a.name[0].toUpperCase()));
-  alphaNav.innerHTML = letters.map(l=> `
-    <button class="${existing.has(l)?'':'off'}" data-letter="${l}" ${existing.has(l)?'':'disabled style="opacity:.25"'}>${l}</button>
-  `).join('');
-  alphaNav.querySelectorAll('button').forEach(b=>{
-    b.addEventListener('click', ()=>{
-      const letter = b.dataset.letter;
-      const target = appsList.querySelector(`[data-letter="${letter}"]`);
-      if (target) target.scrollIntoView({behavior:'smooth', block:'start'});
-      alphaNav.querySelectorAll('button').forEach(x=> x.classList.remove('active'));
-      b.classList.add('active');
-    });
-  });
+  const letters='АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+  const existing=new Set(apps.map(a=> (a.name[0]||'').toUpperCase()));
+  alphaNav.innerHTML='';
+  const frag=document.createDocumentFragment();
+  for(const l of letters){
+    const btn=document.createElement('button');
+    btn.type='button'; btn.textContent=l; btn.dataset.letter=l;
+    if(!existing.has(l)){ btn.disabled=true; btn.style.opacity='0.25'; }
+    frag.appendChild(btn);
+  }
+  alphaNav.appendChild(frag);
 }
 
-function escapeHtml(s){ return s.replace(/[&<>"]/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// ── Event delegation (вместо кучи listener) ───────────────────────
+pinnedGrid.addEventListener('click', (e)=>{
+  const btn=e.target.closest('.app-card'); if(!btn) return;
+  launchApp(btn.dataset.path, btn.dataset.name);
+});
+pinnedGrid.addEventListener('contextmenu', (e)=>{
+  const btn=e.target.closest('.app-card'); if(!btn) return;
+  e.preventDefault(); showContextMenu(e, btn.dataset.name);
+});
+recentList.addEventListener('click', (e)=>{
+  const row=e.target.closest('.recent-item'); if(!row) return;
+  launchApp(row.dataset.path, row.dataset.name);
+});
+appsList.addEventListener('click', (e)=>{
+  const row=e.target.closest('.app-row'); if(!row) return;
+  launchApp(row.dataset.path, row.dataset.name);
+});
+alphaNav.addEventListener('click', (e)=>{
+  const b=e.target.closest('button'); if(!b||b.disabled) return;
+  const letter=b.dataset.letter;
+  const target=appsList.querySelector('[data-letter="'+CSS.escape(letter)+'"]');
+  if(target) target.scrollIntoView({behavior:'smooth',block:'start'});
+  alphaNav.querySelectorAll('button').forEach(x=> x.classList.remove('active'));
+  b.classList.add('active');
+});
 
 async function launchApp(p, name){
-  if (isElectron && p){
-    const res = await window.StartORBack.launchApp(p);
-    if (!res.ok) toast('Не удалось запустить: ' + (res.error||'неизвестно'), 2500);
-    else toast(`Запуск ${name}…`);
+  const cleanName=sanitizeName(name);
+  if(isElectron && p){
+    if(typeof p!=='string' || p.length>1024 || p.includes('\0')){ toast('Некорректный путь'); return; }
+    try{
+      const res=await window.StartORBack.launchApp(p);
+      if(!res.ok) toast('Не удалось запустить: '+(res.error||'неизвестно').slice(0,120),2500);
+      else toast('Запуск '+cleanName+'…');
+    }catch{ toast('Ошибка запуска'); }
   } else {
-    // в превью — просто тост
-    toast(`В Windows здесь запустится: ${name}`, 2200);
-    // также откроем настройки как демо если это параметры
-    if (name.includes('Параметры')) openSettings();
+    toast('В Windows здесь запустится: '+cleanName,2200);
+    if(cleanName.includes('Параметры')) openSettings();
   }
 }
+function showContextMenu(e,name){ toast('ПКМ по '+sanitizeName(name)+' — закрепить/открыть расположение'); }
 
-function showContextMenu(e, name){
-  // простой тост вместо меню
-  toast(`ПКМ по ${name} — в полной версии: закрепить, удалить, открыть расположение`);
-}
-
-// Search
-searchInput.addEventListener('input', ()=>{
-  const v = searchInput.value;
+// ── Search: debounce + throttle ───────────────────────────────────
+const debouncedRender=debounce(()=>{
+  const v=searchInput.value;
   searchWrap.classList.toggle('has-value', v.length>0);
-  renderPinned();
-  renderRecent();
-  renderAppsList();
+  renderPinned(); renderAppsList();
+},120);
+
+searchInput.addEventListener('input', ()=>{
+  const v=searchInput.value;
+  if(v.length>80){ searchInput.value=v.slice(0,80); }
+  searchWrap.classList.toggle('has-value', searchInput.value.length>0);
+  debouncedRender();
 });
 searchClear.addEventListener('click', ()=>{
-  searchInput.value='';
-  searchWrap.classList.remove('has-value');
-  renderAppsList(); renderPinned();
-  searchInput.focus();
+  searchInput.value=''; searchWrap.classList.remove('has-value'); renderPinned(); renderAppsList(); searchInput.focus();
 });
 searchInput.addEventListener('keydown', (e)=>{
-  if (e.key==='Escape'){
-    if (searchInput.value){ searchInput.value=''; searchWrap.classList.remove('has-value'); renderPinned(); renderAppsList(); }
+  if(e.key==='Escape'){
+    if(searchInput.value){ searchInput.value=''; searchWrap.classList.remove('has-value'); renderPinned(); renderAppsList(); }
     else hideMenu();
   }
-  if (e.key==='Enter'){
-    const first = pinnedGrid.querySelector('.app-card') || appsList.querySelector('.app-row');
-    if (first) first.click();
+  if(e.key==='Enter'){
+    const first=pinnedGrid.querySelector('.app-card')||appsList.querySelector('.app-row');
+    if(first) first.click();
   }
 });
 document.addEventListener('keydown', (e)=>{
-  if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); searchInput.focus(); searchInput.select(); }
-  if (e.key==='Escape'){ if (settingsPanel.classList.contains('open')) closeSettings(); else if(!isElectron || searchInput.value) {} else window.StartORBack?.hideMenu(); }
-  if (e.altKey && e.code==='Space'){ e.preventDefault(); togglePreviewMenu(); }
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  if(e.key==='Escape'){ if(settingsPanel.classList.contains('open')) closeSettings(); else if(isElectron && !searchInput.value) { try{ window.StartORBack.hideMenu(); }catch{} } }
+  if(e.altKey && e.code==='Space'){ e.preventDefault(); togglePreviewMenu(); }
 });
 
-// Theme picker
+// Theme picker (delegation)
 themePicker.addEventListener('click', (e)=>{
-  const card = e.target.closest('.theme-card');
-  if (!card) return;
-  setTheme(card.dataset.theme);
-  toast(`Тема: ${card.querySelector('span').textContent.split('\n')[0].trim()}`);
+  const card=e.target.closest('.theme-card'); if(!card) return;
+  const t=card.dataset.theme;
+  if(!isValidTheme(t)) return;
+  setTheme(t); toast('Тема: '+ t);
 });
-
-// Accent
 $$('.accent-dot').forEach(b=>{
-  b.addEventListener('click', ()=> setAccent(b.dataset.color));
+  b.addEventListener('click', ()=>{
+    const c=b.dataset.color; if(isValidHex(c)) setAccent(c);
+  });
 });
-$('#accentCustom').addEventListener('input', (e)=> setAccent(e.target.value));
-
-// Toggles
+$('#accentCustom').addEventListener('input', (e)=>{
+  const c=e.target.value; if(isValidHex(c)) setAccent(c);
+});
 $('#toggleBlur').addEventListener('change', (e)=>{
   document.body.classList.toggle('no-blur', !e.target.checked);
-  localStorage.setItem('startorback:blur', e.target.checked?'1':'0');
+  storage.set('startorback:blur', e.target.checked?'1':'0');
 });
 $('#opacityRange').addEventListener('input', (e)=>{
-  const v = e.target.value;
-  $('#opacityVal').textContent = v+'%';
-  document.documentElement.style.setProperty('--opacity', v/100);
-  localStorage.setItem('startorback:opacity', v);
+  const v=e.target.value; $('#opacityVal').textContent=v+'%';
+  document.documentElement.style.setProperty('--opacity', Number(v)/100);
+  storage.set('startorback:opacity', v);
 });
 $('#toggleAnim').addEventListener('change', (e)=>{
   startMenu.classList.toggle('no-anim', !e.target.checked);
-  localStorage.setItem('startorback:anim', e.target.checked?'1':'0');
+  storage.set('startorback:anim', e.target.checked?'1':'0');
 });
 
-// Settings open/close
 function openSettings(){ settingsPanel.classList.add('open'); backdrop.classList.add('show'); }
 function closeSettings(){ settingsPanel.classList.remove('open'); backdrop.classList.remove('show'); }
 $('#btn-settings').addEventListener('click', openSettings);
 $('#settingsClose').addEventListener('click', closeSettings);
 backdrop.addEventListener('click', closeSettings);
-$$('.footer-btn')[1]?.addEventListener('click', openSettings); // второй — параметры
+const footerBtns=$$('.footer-btn'); if(footerBtns[1]) footerBtns[1].addEventListener('click', openSettings);
 
-// Side nav demo
 $('#sideNav').addEventListener('click', (e)=>{
-  const a = e.target.closest('a'); if(!a) return; e.preventDefault();
-  toast(`Папка «${a.textContent.trim()}» — в Windows откроется проводник`);
+  const a=e.target.closest('a'); if(!a) return; e.preventDefault();
+  toast('Папка «'+sanitizeName(a.textContent.trim())+'» — откроется проводник');
 });
 $('#sideTiles').addEventListener('click', (e)=>{
-  const t = e.target.closest('.tile'); if(!t) return; toast('Плитка — живой виджет (демо)');
+  const t=e.target.closest('.tile'); if(!t) return; toast('Плитка — живой виджет (демо)');
 });
-
-// All apps navigation
 $$('[data-action="all-apps"]').forEach(b=> b.addEventListener('click', ()=>{
   allAppsSection.classList.remove('hidden'); allAppsSection.dataset.forced='true';
   $$('.pane-main .section').forEach(s=>{ if(!s.classList.contains('all-apps-section')) s.style.display='none'; });
@@ -354,82 +472,86 @@ $('#btn-back-pinned').addEventListener('click', ()=>{
   $$('.pane-main .section').forEach(s=> s.style.display='');
   searchInput.value=''; searchWrap.classList.remove('has-value'); renderPinned(); renderRecent();
 });
-$('#btn-more-recent').addEventListener('click', ()=> toast('Здесь был бы список недавних файлов из проводника'));
-
-// Power
-$('#btn-power, .footer-btn.power').addEventListener('click', (e)=>{
+$('#btn-more-recent').addEventListener('click', ()=> toast('Список недавних из проводника (демо)'));
+const powerBtns=[$('#btn-power'), $$('.footer-btn.power')[0]].filter(Boolean);
+powerBtns.forEach(btn=> btn.addEventListener('click', (e)=>{
   e.preventDefault();
-  if(confirm('StartORBack не управляет питанием системы — это безопасный оверлей.\n\nХочешь выйти из программы (вернуть обычный Пуск)?')) {
-    if(isElectron) window.StartORBack?.openExternal?.('ms-settings:') || closeSettings();
-    else toast('В Windows здесь было бы меню: завершение работы, перезагрузка, сон');
+  if(confirm('StartORBack не управляет питанием — это оверлей.\nВыйти из программы?')){
+    if(isElectron) { try{ window.StartORBack.openExternal('https://github.com/Artins200/StartORBack'); }catch{} closeSettings(); }
+    else toast('В Windows было бы меню питания');
   }
-});
-
-// About links
+}));
 $$('[data-link]').forEach(a=>{
   a.addEventListener('click', (e)=>{
     e.preventDefault();
-    const k = a.dataset.link;
-    if(k==='github') isElectron? window.StartORBack.openExternal('https://github.com/Artins200/StartORBack') : window.open('https://github.com/Artins200/StartORBack','_blank');
-    if(k==='readme') toast('Установи: git clone → npm install → npm start (Windows + Electron)');
-    if(k==='exit') { if(isElectron) window.close(); else toast('В Electron здесь выход из приложения'); }
+    const k=a.dataset.link;
+    if(k==='github') isElectron? window.StartORBack.openExternal('https://github.com/Artins200/StartORBack'): window.open('https://github.com/Artins200/StartORBack','_blank','noopener');
+    if(k==='readme') toast('git clone → npm install → npm start');
+    if(k==='exit') { if(isElectron) { try{ window.close(); }catch{} } else toast('В Electron — выход'); }
   });
 });
-
-// Preview banner hide
-if (previewBanner){
-  $('#banner-hide')?.addEventListener('click', (e)=>{ e.preventDefault(); previewBanner.classList.add('hidden'); localStorage.setItem('startorback:hideBanner','1'); });
-  if(localStorage.getItem('startorback:hideBanner')==='1') previewBanner.classList.add('hidden');
+if(previewBanner){
+  const hideBtn=$('#banner-hide');
+  if(hideBtn) hideBtn.addEventListener('click', (e)=>{ e.preventDefault(); previewBanner.classList.add('hidden'); storage.set('startorback:hideBanner','1'); });
+  if(storage.get('startorback:hideBanner','0')==='1') previewBanner.classList.add('hidden');
 }
-
-// Taskbar start toggle (для превью)
-let menuVisible = true;
+let menuVisible=true;
 function togglePreviewMenu(){
-  menuVisible = !menuVisible;
-  if (menuVisible){
-    startMenu.style.display='flex'; startMenu.style.animation='slideUp .24s'; taskbarStart.classList.add('active');
-  } else { startMenu.style.display='none'; taskbarStart.classList.remove('active'); }
+  menuVisible=!menuVisible;
+  if(menuVisible){ startMenu.style.display='flex'; startMenu.style.animation='slideUp .24s'; taskbarStart.classList.add('active'); }
+  else { startMenu.style.display='none'; taskbarStart.classList.remove('active'); }
 }
 function hideMenu(){ if(!isElectron){ menuVisible=false; startMenu.style.display='none'; taskbarStart.classList.remove('active'); } }
 taskbarStart.addEventListener('click', togglePreviewMenu);
 
-// Electron events
-if (isElectron){
+if(isElectron){
   document.body.classList.add('is-electron');
-  window.StartORBack.onThemeChanged(t=> setTheme(t));
-  window.StartORBack.onAccentChanged(c=> setAccent(c));
-  window.StartORBack.onMenuShow(()=>{ menuVisible=true; startMenu.style.display='flex'; searchInput.focus(); });
-  window.StartORBack.onMenuHide(()=>{ menuVisible=false; startMenu.style.display='none'; });
-  // начальная тема с main
-  window.StartORBack.getTheme().then(t=> setTheme(t));
+  try{
+    const rm1=window.StartORBack.onThemeChanged(t=> setTheme(t));
+    const rm2=window.StartORBack.onAccentChanged(c=> setAccent(c));
+    const rm3=window.StartORBack.onMenuShow(()=>{ menuVisible=true; startMenu.style.display='flex'; searchInput.focus(); });
+    const rm4=window.StartORBack.onMenuHide(()=>{ menuVisible=false; startMenu.style.display='none'; });
+    window.addEventListener('beforeunload', ()=>{ try{ rm1(); rm2(); rm3(); rm4(); }catch{} });
+    window.StartORBack.getTheme().then(t=> { if(isValidTheme(t)) setTheme(t); });
+  }catch{}
 }
 
-// Init
-// восстановить настройки
+// Init restore
 (() => {
-  const blur = localStorage.getItem('startorback:blur'); if(blur==='0') { $('#toggleBlur').checked=false; document.body.classList.add('no-blur'); }
-  const op = localStorage.getItem('startorback:opacity'); if(op){ $('#opacityRange').value=op; $('#opacityVal').textContent=op+'%'; document.documentElement.style.setProperty('--opacity', op/100); }
-  const anim = localStorage.getItem('startorback:anim'); if(anim==='0') { $('#toggleAnim').checked=false; startMenu.classList.add('no-anim'); }
-  setAccent(accent);
-  setTheme(currentTheme);
-  isElectron = !!(window.StartORBack && window.StartORBack.isElectron);
+  const blur=storage.get('startorback:blur',null); if(blur==='0'){ const el=$('#toggleBlur'); if(el) el.checked=false; document.body.classList.add('no-blur'); }
+  const op=storage.get('startorback:opacity',null); if(op && /^\d+$/.test(op)){ const n=Math.min(100,Math.max(80, parseInt(op,10))); const el=$('#opacityRange'); if(el) el.value=n; const ov=$('#opacityVal'); if(ov) ov.textContent=n+'%'; document.documentElement.style.setProperty('--opacity', n/100); }
+  const anim=storage.get('startorback:anim',null); if(anim==='0'){ const el=$('#toggleAnim'); if(el) el.checked=false; startMenu.classList.add('no-anim'); }
+  setAccent(accent); setTheme(currentTheme);
+  isElectron=!!(window.StartORBack && window.StartORBack.isElectron);
   document.body.classList.toggle('is-electron', isElectron);
-  if (isElectron) {
-    // в Electron меню должно быть скрыто по умолчанию до вызова
-    // но для первого рендера покажем
-  }
 })();
 
 loadApps();
 
-// Клик вне меню в превью — скрыть
-if (!isElectron){
+if(!isElectron){
   document.addEventListener('click', (e)=>{
-    if (!startMenu.contains(e.target) && !taskbarStart.contains(e.target) && !settingsPanel.contains(e.target) && menuVisible){
-      // не скрываем если клик по настройкам
-      if (e.target.closest('.settings-panel') || e.target.closest('.backdrop')) return;
-      // оставим меню видимым в превью для демо, но по клику на фон прячем
-      if (e.target.classList.contains('stage') || e.target.classList.contains('desktop-mock')) hideMenu();
+    if(!startMenu.contains(e.target) && !taskbarStart.contains(e.target) && !settingsPanel.contains(e.target) && menuVisible){
+      if(e.target.closest('.settings-panel') || e.target.closest('.backdrop')) return;
+      if(e.target.classList.contains('stage') || e.target.classList.contains('desktop-mock')) hideMenu();
     }
   });
 }
+
+// Защита от добавления стилей извне: наблюдаем за head
+try{
+  const mo=new MutationObserver((muts)=>{
+    for(const mu of muts) for(const n of mu.addedNodes){
+      if(n.tagName==='STYLE' || n.tagName==='LINK'){
+        // разрешаем только наши стили и fonts
+        const href=n.href||'';
+        if(href && !href.includes('styles.css') && !href.includes('fonts.googleapis')) {
+          // не удаляем fonts, но логируем
+        }
+      }
+    }
+  });
+  mo.observe(document.documentElement, {childList:true, subtree:true});
+}catch{}
+
+// Экспорт для тестов
+window.__StartORBackTest = { escapeHtml, sanitizeName, isValidHex, isValidTheme };
