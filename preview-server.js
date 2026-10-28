@@ -156,11 +156,16 @@ const server = http.createServer((req, res) => {
         if (stat.size > MAX_FILE_SIZE) { fs.close(fd, ()=>{}); res.writeHead(413, getSecurityHeaders()); return res.end('File Too Large'); }
         const etag = crypto.createHash('sha1').update(stat.mtimeMs + '-' + stat.size).digest('hex');
         if (req.headers['if-none-match'] === etag) { fs.close(fd, ()=>{}); res.writeHead(304, getSecurityHeaders()); return res.end(); }
+        if (stat.size === 0) {
+          fs.close(fd, ()=>{});
+          res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Content-Length': 0, 'ETag': etag, 'Cache-Control': 'no-store', ...getSecurityHeaders() });
+          return res.end();
+        }
         // Читаем через fd чтобы избежать TOCTOU между stat и readFile
         const chunks = [];
         let bytesRead = 0;
         const stream = fs.createReadStream(null, { fd, start: 0, end: stat.size - 1, autoClose: false });
-        stream.on('data', chunk => { chunks.push(chunk); bytesRead += chunk.length; if (bytesRead > MAX_FILE_SIZE) { stream.destroy(); fs.close(fd, ()=>{}); res.writeHead(413, getSecurityHeaders()); res.end('File Too Large'); }});
+        stream.on('data', chunk => { chunks.push(chunk); bytesRead += chunk.length; if (bytesRead > MAX_FILE_SIZE) { stream.destroy(); fs.close(fd, ()=>{}); if (!res.headersSent) { res.writeHead(413, getSecurityHeaders()); res.end('File Too Large'); } }});
         stream.on('end', () => {
           fs.close(fd, ()=>{});
           const data = Buffer.concat(chunks);
@@ -178,7 +183,7 @@ const server = http.createServer((req, res) => {
           if (req.method === 'HEAD') return res.end();
           res.end(data);
         });
-        stream.on('error', () => { fs.close(fd, ()=>{}); res.writeHead(500, getSecurityHeaders()); res.end('Error'); });
+        stream.on('error', () => { fs.close(fd, ()=>{}); if (res.headersSent) return; res.writeHead(500, getSecurityHeaders()); res.end('Error'); });
       });
     });
 

@@ -64,7 +64,7 @@ function isPrivateHost(host) {
     if (lower === '::1' || lower === '::') return true;
     if (lower.startsWith('::ffff:')) return true; // IPv4-mapped, в т.ч. private
     if (lower.startsWith('ff')) return true; // multicast ff00::/8 (все)
-    if (/^f[cd]/.test(lower)) return true; // ULA fc00::/7
+    if (/^f[cd]/i.test(lower)) return true; // ULA fc00::/7
     if (/^fe[89ab]/i.test(lower)) return true; // link-local fe80::/10
     return false;
   }
@@ -446,7 +446,7 @@ function setTheme(theme) {
 ipcMain.handle('get-apps', (e) => {
   if (!isSenderAllowed(e)) return { ok:false, code:'forbidden_sender' };
   if (isRateLimited(`get-apps:${e.sender.id}`)) return { ok:false, code:'rate_limited' };
-  try { return scanAppsSecure(); } catch { return []; }
+  try { return scanAppsSecure(); } catch { return { ok:false, code:'scan_failed' }; }
 });
 ipcMain.handle('get-system-info', (e) => {
   if (!isSenderAllowed(e)) return { platform: os.platform(), theme: currentTheme, accent };
@@ -466,38 +466,44 @@ ipcMain.handle('launch-app', async (e, appPath) => {
     if (appPath.includes('\0')) return { ok:false, error:'invalid path' };
     const trimmed = appPath.trim();
     const lowerTrim = trimmed.toLowerCase();
-    // Поддержка URI-схем Windows (ms-settings: и т.д.) — отдельный белый список
+
+    // 1) URI-схемы (не пути) — можно сразу, до path-валидации
     for (const scheme of ALLOWED_URI_SCHEMES) {
-      if (lowerTrim === scheme || lowerTrim.startsWith(scheme)) {
-        // Дополнительная валидация: только буквенно-дефис после ms-
+      if (lowerTrim.startsWith(scheme)) {
         if (!/^ms-[a-z-]+:.*$/i.test(trimmed)) return { ok:false, error:'invalid uri scheme' };
-        try { await shell.openExternal(trimmed); try { hideMenu(); } catch {} return { ok:true }; } catch(err){ return { ok:false, error: String(err).slice(0,200)}}
+        try { await shell.openExternal(trimmed); try { hideMenu(); } catch {} return { ok:true }; }
+        catch (err) { return { ok:false, error: String(err).slice(0,200) }; }
       }
     }
-    // .url файлы: фильтруем по содержимому — разрешаем только http(s)
+
+    // 2) Теперь пути: сначала path-валидация, потом любые чтения
     const normalized = path.normalize(trimmed);
-    if (normalized.toLowerCase().endsWith('.url')) {
-      try {
-        const content = fs.readFileSync(normalized, 'utf8').slice(0, 2048);
-        const m = content.match(/^\s*URL\s*=\s*(.+)\s*$/im);
-        if (!m) return { ok:false, error:'invalid .url' };
-        const target = m[1].trim();
-        if (!isValidExternalUrl(target)) return { ok:false, error:'url in .url not allowed' };
-        // Открываем через openExternal, а не openPath
-        await shell.openExternal(target); try { hideMenu(); } catch {} return { ok:true };
-      } catch { return { ok:false, error:'cannot read .url' }; }
-    }
     if (!ALLOWED_EXT_RE.test(normalized)) return { ok:false, error:'unsupported file type' };
     const roots = getStartMenuRoots();
-    const isInStartMenu = isPathInsideAllowedRoots(normalized, roots);
-    const isInSys32 = isInSystem32(normalized);
-    if (!isInStartMenu && !isInSys32) return { ok:false, error:'path not allowed' };
+    if (!isPathInsideAllowedRoots(normalized, roots) && !isInSystem32(normalized))
+      return { ok:false, error:'path not allowed' };
+
     let stat; try { stat = fs.statSync(normalized); } catch { return { ok:false, error:'file not found' }; }
     if (!stat.isFile()) return { ok:false, error:'not a file' };
     if (stat.size > 50 * 1024 * 1024) return { ok:false, error:'file too large' };
     let real; try { real = fs.realpathSync(normalized); } catch { real = normalized; }
-    const realAllowed = isPathInsideAllowedRoots(real, roots) || isInSystem32(real);
-    if (!realAllowed) return { ok:false, error:'resolved path not allowed' };
+    if (!isPathInsideAllowedRoots(real, roots) && !isInSystem32(real))
+      return { ok:false, error:'resolved path not allowed' };
+
+    // 3) Только теперь читаем .url — путь уже проверен
+    if (real.toLowerCase().endsWith('.url')) {
+      try {
+        const content = fs.readFileSync(real, 'utf8').slice(0, 2048);
+        const m = content.match(/^\s*URL\s*=\s*(.+)\s*$/im);
+        if (!m) return { ok:false, error:'invalid .url' };
+        const target = m[1].trim();
+        if (!isValidExternalUrl(target)) return { ok:false, error:'url in .url not allowed' };
+        await shell.openExternal(target);
+        try { hideMenu(); } catch {}
+        return { ok:true };
+      } catch { return { ok:false, error:'cannot read .url' }; }
+    }
+
     const err = await shell.openPath(real);
     if (err) return { ok:false, error: err.slice(0, 200) };
     try { hideMenu(); } catch {}
