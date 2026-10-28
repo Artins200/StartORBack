@@ -411,6 +411,10 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
   try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnAllWorkspaces: true, skipTransformProcessType: true }); } catch {}
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // авто-показ для демо — через 400мс чтобы юзер увидел что работает
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(() => { try { showMenu(); } catch {} }, 400);
+  });
   mainWindow.on('blur', () => {
     setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) hideMenu(); } catch {} }, 120);
   });

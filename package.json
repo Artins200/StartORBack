@@ -1,7 +1,7 @@
 {
   "name": "startorback",
-  "version": "3.0.0",
-  "description": "StartORBack v3 hardened — CSP, sandbox, fixed System32/SSRF/traversal, 127.0.0.1 only",
+  "version": "3.1.0",
+  "description": "StartORBack — оверлей Пуск без вмешательства в систему. Работает поверх, пока запущен.",
   "main": "main.js",
   "author": "StartORBack",
   "license": "MIT",
@@ -16,14 +16,14 @@
     "pack": "npx --yes electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "45.1.0"
+    "electron": "34.5.8"
   },
   "dependencies": {},
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=18.18.0"
   },
   "overrides": {
     "extract-zip": "^2.0.1"
   },
-  "keywords": ["start-menu", "windows", "electron", "hardened", "csp", "sandbox", "overlay"]
+  "keywords": ["start-menu", "windows", "electron", "overlay", "hardened"]
 }

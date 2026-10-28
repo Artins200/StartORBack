@@ -310,9 +310,13 @@ powerBtns.forEach(btn=> btn.addEventListener('click', (e)=>{ e.preventDefault();
 $$('[data-link]').forEach(a=>{ a.addEventListener('click', (e)=>{ e.preventDefault(); const k=a.dataset.link; if(k==='github') isElectron? window.StartORBack.openExternal('https://github.com/Artins200/StartORBack'): window.open('https://github.com/Artins200/StartORBack','_blank','noopener'); if(k==='readme') toast('git clone → npm install → npm start'); if(k==='exit') { if(isElectron) { try{ window.close(); }catch{} } else toast('В Electron — выход'); } }); });
 if(previewBanner){ const hideBtn=$('#banner-hide'); if(hideBtn) hideBtn.addEventListener('click', (e)=>{ e.preventDefault(); previewBanner.classList.add('hidden'); storage.set('startorback:hideBanner','1'); }); if(storage.get('startorback:hideBanner','0')==='1') previewBanner.classList.add('hidden'); }
 let menuVisible=true;
+startMenu.style.display='flex';
+taskbarStart.classList.add('active');
 function togglePreviewMenu(){ menuVisible=!menuVisible; if(menuVisible){ startMenu.style.display='flex'; startMenu.style.animation='slideUp .24s'; taskbarStart.classList.add('active'); } else { startMenu.style.display='none'; taskbarStart.classList.remove('active'); } }
 function hideMenu(){ if(!isElectron){ menuVisible=false; startMenu.style.display='none'; taskbarStart.classList.remove('active'); } }
+function showMenuDemo(){ menuVisible=true; startMenu.style.display='flex'; startMenu.style.animation='slideUp .24s'; taskbarStart.classList.add('active'); }
 taskbarStart.addEventListener('click', togglePreviewMenu);
+document.addEventListener('DOMContentLoaded', ()=> setTimeout(showMenuDemo, 100));
 if(isElectron){
   document.body.classList.add('is-electron');
   try{
