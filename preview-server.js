@@ -55,7 +55,7 @@ function getSecurityHeaders() {
     'X-XSS-Protection': '0',
     'Referrer-Policy': 'no-referrer',
     'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     'Cache-Control': 'no-store'
   };
 }
@@ -144,58 +144,41 @@ const server = http.createServer((req, res) => {
       return res.end('Forbidden file type');
     }
 
-    // ── п.7 фикс TOCTOU: проверяем путь до чтения, а не stat→readFile race ─
-    // Проверяем что резолвленный путь внутри ROOT (уже сделано в safeFilePath)
-    // Теперь сразу читаем файл асинхронно, без lstat→realpath→readFile гонки
-    // Если файл — симлинк вне ROOT, safeFilePath уже отклонит (т.к. resolved вне ROOT после join)
-    // Для симлинка внутри ROOT — разрешаем, это наш же renderer
-    fs.stat(filePath, (statErr, stat) => {
-      if (statErr) {
-        if (statErr.code === 'ENOENT') {
-          res.writeHead(404, getSecurityHeaders());
-          return res.end('Not Found');
-        }
-        res.writeHead(500, getSecurityHeaders());
-        return res.end('Error');
+    // ── п.7 фикс TOCTOU v2: open+fstat+readFile(fd) ───────────────
+    fs.open(filePath, 'r', (openErr, fd) => {
+      if (openErr) {
+        if (openErr.code === 'ENOENT') { res.writeHead(404, getSecurityHeaders()); return res.end('Not Found'); }
+        res.writeHead(500, getSecurityHeaders()); return res.end('Error');
       }
-      if (!stat.isFile()) {
-        res.writeHead(404, getSecurityHeaders());
-        return res.end('Not Found');
-      }
-      if (stat.size > MAX_FILE_SIZE) {
-        res.writeHead(413, getSecurityHeaders());
-        return res.end('File Too Large');
-      }
-      const etag = crypto.createHash('sha1').update(stat.mtimeMs + '-' + stat.size).digest('hex');
-      if (req.headers['if-none-match'] === etag) {
-        res.writeHead(304, getSecurityHeaders());
-        return res.end();
-      }
-
-      fs.readFile(filePath, (err, data) => {
-        if (err) {
-          res.writeHead(500, getSecurityHeaders());
-          return res.end('Error');
-        }
-        if (data.length > MAX_FILE_SIZE) {
-          res.writeHead(413, getSecurityHeaders());
-          return res.end('File Too Large');
-        }
-        const ctype = MIME[ext] || 'application/octet-stream';
-        const headers = {
-          'Content-Type': ctype,
-          'Content-Length': data.length,
-          'ETag': etag,
-          'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
-          ...getSecurityHeaders()
-        };
-        // п.2: ETag/Cache-Control должен быть до CSP, но getSecurityHeaders уже добавляет no-store — перезапишем
-        if (ext !== '.html') headers['Cache-Control'] = 'public, max-age=3600';
-        else headers['Cache-Control'] = 'no-store';
-
-        res.writeHead(200, headers);
-        if (req.method === 'HEAD') return res.end();
-        res.end(data);
+      fs.fstat(fd, (statErr, stat) => {
+        if (statErr) { fs.close(fd, ()=>{}); res.writeHead(500, getSecurityHeaders()); return res.end('Error'); }
+        if (!stat.isFile()) { fs.close(fd, ()=>{}); res.writeHead(404, getSecurityHeaders()); return res.end('Not Found'); }
+        if (stat.size > MAX_FILE_SIZE) { fs.close(fd, ()=>{}); res.writeHead(413, getSecurityHeaders()); return res.end('File Too Large'); }
+        const etag = crypto.createHash('sha1').update(stat.mtimeMs + '-' + stat.size).digest('hex');
+        if (req.headers['if-none-match'] === etag) { fs.close(fd, ()=>{}); res.writeHead(304, getSecurityHeaders()); return res.end(); }
+        // Читаем через fd чтобы избежать TOCTOU между stat и readFile
+        const chunks = [];
+        let bytesRead = 0;
+        const stream = fs.createReadStream(null, { fd, start: 0, end: stat.size - 1, autoClose: false });
+        stream.on('data', chunk => { chunks.push(chunk); bytesRead += chunk.length; if (bytesRead > MAX_FILE_SIZE) { stream.destroy(); fs.close(fd, ()=>{}); res.writeHead(413, getSecurityHeaders()); res.end('File Too Large'); }});
+        stream.on('end', () => {
+          fs.close(fd, ()=>{});
+          const data = Buffer.concat(chunks);
+          if (data.length > MAX_FILE_SIZE) { res.writeHead(413, getSecurityHeaders()); return res.end('File Too Large'); }
+          const ctype = MIME[ext] || 'application/octet-stream';
+          const headers = {
+            'Content-Type': ctype,
+            'Content-Length': data.length,
+            'ETag': etag,
+            'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+            ...getSecurityHeaders()
+          };
+          if (ext !== '.html') headers['Cache-Control'] = 'public, max-age=3600'; else headers['Cache-Control'] = 'no-store';
+          res.writeHead(200, headers);
+          if (req.method === 'HEAD') return res.end();
+          res.end(data);
+        });
+        stream.on('error', () => { fs.close(fd, ()=>{}); res.writeHead(500, getSecurityHeaders()); res.end('Error'); });
       });
     });
 
@@ -204,7 +187,7 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.headersTimeout = 5000;
+server.headersTimeout = 12000; // должен быть >= requestTimeout
 server.requestTimeout = 10000;
 server.keepAliveTimeout = 5000;
 server.maxHeadersCount = 50;

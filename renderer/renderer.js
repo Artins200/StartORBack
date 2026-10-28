@@ -90,6 +90,8 @@ async function loadApps(){
     if (isElectron){
       try{
         const raw = await window.StartORBack.getApps();
+        if (raw && !Array.isArray(raw) && raw.code === 'rate_limited') { toast('Слишком часто — подожди секунду'); return; }
+        if (raw && raw.ok === false) return;
         const icons=['💻','🌐','📁','🎮','🎵','🎨','🧩','📄','📊','⌘','📁','⚙️','📈','🧮','📝','🖌️','💬','🎥','▶️','🐙','🐳','>_','✂️','⛅','🚀','📑','🖼️'];
         apps=(Array.isArray(raw)?raw:[]).map((a,i)=>({
           name: sanitizeName(a.name)||'Без имени',

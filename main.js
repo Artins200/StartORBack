@@ -15,6 +15,7 @@ const { pathToFileURL } = require('url');
 const ALLOWED_THEMES = new Set(['win11', 'win10', 'win7']);
 const HEX_COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const ALLOWED_EXT_RE = /\.(lnk|url|exe)$/i;
+const ALLOWED_URI_SCHEMES = new Set(['ms-settings:', 'ms-weather:', 'ms-screenclip:', 'ms-screensketch:', 'ms-get-started:']);
 const MAX_SCAN_FILES = 800;
 const MAX_SCAN_DIRS = 1200;
 const MAX_SCAN_DEPTH = 4;
@@ -54,31 +55,30 @@ function isRateLimited(key) {
 function isValidHexColor(c) { return typeof c === 'string' && HEX_COLOR_RE.test(c.trim()); }
 function isValidTheme(t) { return typeof t === 'string' && ALLOWED_THEMES.has(t); }
 
-// ── SSRF защита — п.4 ─────────────────────────────────────────────
+// ── SSRF защита — п.4 (фикс v4) ───────────────────────────────────
 function isPrivateHost(host) {
   if (!host) return false;
-  // Убираем скобки у IPv6 литералов
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
   const lower = host.toLowerCase();
-  // IPv6
   if (net.isIPv6(lower)) {
-    return lower === '::1' || lower === '::' || lower === '::ffff:127.0.0.1' ||
-      lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd') ||
-      lower.startsWith('::ffff:') || lower.startsWith('ff00:') || lower.startsWith('::ffff:192.') ;
+    if (lower === '::1' || lower === '::') return true;
+    if (lower.startsWith('::ffff:')) return true; // IPv4-mapped, в т.ч. private
+    if (lower.startsWith('ff')) return true; // multicast ff00::/8 (все)
+    if (/^f[cd]/.test(lower)) return true; // ULA fc00::/7
+    if (/^fe[89ab]/i.test(lower)) return true; // link-local fe80::/10
+    return false;
   }
-  // IPv4
   if (net.isIPv4(lower)) {
     const parts = lower.split('.').map(Number);
     const [a,b] = parts;
     if (a === 10) return true;
     if (a === 127) return true;
     if (a === 0) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata
+    if (a === 169 && b === 254) return true; // link-local + metadata
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     return false;
   }
-  // hostname
   return lower === 'localhost' || lower.endsWith('.localhost');
 }
 
@@ -124,8 +124,20 @@ function getStartMenuRoots() {
     try {
       const norm = path.normalize(p);
       if (!/Start Menu[\\/]+Programs/i.test(norm)) continue;
-      // Дополнительно: путь должен быть абсолютным
       if (!path.isAbsolute(norm)) continue;
+      // defense-in-depth: проверяем что корень похож на реальный Start Menu
+      // должен существовать хотя бы один из типичных маркеров
+      const mustExistMarkers = ['desktop.ini', 'Startup', 'Accessories', 'Administrative Tools', 'System Tools'];
+      try {
+        const hasMarker = mustExistMarkers.some(n => {
+          try { return fs.existsSync(path.join(norm, n)); } catch { return false; }
+        });
+        // если вообще ничего не найдено и папка существует — считаем подозрительным env-инъекцией, пропускаем только если хардкод
+        if (!hasMarker && fs.existsSync(norm)) {
+          const isHardcoded = norm.toLowerCase() === 'c:\\programdata\\microsoft\\windows\\start menu\\programs';
+          if (!isHardcoded) continue;
+        }
+      } catch {}
       roots.push(norm);
     } catch {}
   }
@@ -133,14 +145,21 @@ function getStartMenuRoots() {
 }
 
 function getSystem32Path() {
-  // Хардкод + проверка env, но с валидацией
   const envWindir = process.env.WINDIR;
   let windir = 'C:\\Windows';
   if (typeof envWindir === 'string' && envWindir.length > 3 && path.isAbsolute(envWindir) && !envWindir.includes('\0')) {
-    // Проверяем что выглядит как Windows dir, а не произвольный путь
-    const lower = envWindir.toLowerCase();
-    if (lower.includes('windows') || /^[a-z]:\\windows/i.test(lower)) {
-      windir = envWindir;
+    // Строгая проверка: только C:\Windows или C:\Windows\...
+    if (/^[a-z]:\\windows(\\|$)/i.test(envWindir)) {
+      // defense-in-depth: проверяем что реально есть System32\cmd.exe
+      try {
+        const cand = path.join(envWindir, 'System32', 'cmd.exe');
+        // на Linux проверки не будет файла — тогда fallback, но на Windows проверим
+        if (process.platform === 'win32') {
+          if (fs.existsSync(cand)) windir = envWindir;
+        } else {
+          windir = envWindir; // на не-Windows доверяем формату
+        }
+      } catch { /* fallback */ }
     }
   }
   return path.join(windir, 'System32');
@@ -425,8 +444,8 @@ function setTheme(theme) {
 
 // ── IPC с sender проверкой — п.9 ──────────────────────────────────
 ipcMain.handle('get-apps', (e) => {
-  if (!isSenderAllowed(e)) return [];
-  if (isRateLimited(`get-apps:${e.sender.id}`)) return []; // п.🟢 фикс — не отдаём кэш при rate-limit
+  if (!isSenderAllowed(e)) return { ok:false, code:'forbidden_sender' };
+  if (isRateLimited(`get-apps:${e.sender.id}`)) return { ok:false, code:'rate_limited' };
   try { return scanAppsSecure(); } catch { return []; }
 });
 ipcMain.handle('get-system-info', (e) => {
@@ -445,17 +464,39 @@ ipcMain.handle('launch-app', async (e, appPath) => {
   try {
     if (typeof appPath !== 'string' || !appPath || appPath.length > 1024) return { ok:false, error:'invalid path' };
     if (appPath.includes('\0')) return { ok:false, error:'invalid path' };
-    const normalized = path.normalize(appPath.trim());
+    const trimmed = appPath.trim();
+    const lowerTrim = trimmed.toLowerCase();
+    // Поддержка URI-схем Windows (ms-settings: и т.д.) — отдельный белый список
+    for (const scheme of ALLOWED_URI_SCHEMES) {
+      if (lowerTrim === scheme || lowerTrim.startsWith(scheme)) {
+        // Дополнительная валидация: только буквенно-дефис после ms-
+        if (!/^ms-[a-z-]+:.*$/i.test(trimmed)) return { ok:false, error:'invalid uri scheme' };
+        try { await shell.openExternal(trimmed); try { hideMenu(); } catch {} return { ok:true }; } catch(err){ return { ok:false, error: String(err).slice(0,200)}}
+      }
+    }
+    // .url файлы: фильтруем по содержимому — разрешаем только http(s)
+    const normalized = path.normalize(trimmed);
+    if (normalized.toLowerCase().endsWith('.url')) {
+      try {
+        const content = fs.readFileSync(normalized, 'utf8').slice(0, 2048);
+        const m = content.match(/^\s*URL\s*=\s*(.+)\s*$/im);
+        if (!m) return { ok:false, error:'invalid .url' };
+        const target = m[1].trim();
+        if (!isValidExternalUrl(target)) return { ok:false, error:'url in .url not allowed' };
+        // Открываем через openExternal, а не openPath
+        await shell.openExternal(target); try { hideMenu(); } catch {} return { ok:true };
+      } catch { return { ok:false, error:'cannot read .url' }; }
+    }
     if (!ALLOWED_EXT_RE.test(normalized)) return { ok:false, error:'unsupported file type' };
     const roots = getStartMenuRoots();
     const isInStartMenu = isPathInsideAllowedRoots(normalized, roots);
-    const isInSys32 = isInSystem32(normalized); // п.1 фикс
+    const isInSys32 = isInSystem32(normalized);
     if (!isInStartMenu && !isInSys32) return { ok:false, error:'path not allowed' };
     let stat; try { stat = fs.statSync(normalized); } catch { return { ok:false, error:'file not found' }; }
     if (!stat.isFile()) return { ok:false, error:'not a file' };
     if (stat.size > 50 * 1024 * 1024) return { ok:false, error:'file too large' };
     let real; try { real = fs.realpathSync(normalized); } catch { real = normalized; }
-    const realAllowed = isPathInsideAllowedRoots(real, roots) || isInSystem32(real); // п.1 фикс
+    const realAllowed = isPathInsideAllowedRoots(real, roots) || isInSystem32(real);
     if (!realAllowed) return { ok:false, error:'resolved path not allowed' };
     const err = await shell.openPath(real);
     if (err) return { ok:false, error: err.slice(0, 200) };
@@ -471,7 +512,8 @@ ipcMain.handle('open-location', async (e, p) => {
     const norm = path.normalize(p.trim());
     const roots = getStartMenuRoots();
     if (!isPathInsideAllowedRoots(norm, roots)) return { ok:false, error:'path not allowed' };
-    await shell.openPath(norm); return { ok:true };
+    // Показываем в проводнике, а не запускаем ярлык
+    shell.showItemInFolder(norm); return { ok:true };
   } catch(err){ return {ok:false, error: String(err).slice(0,200)} }
 });
 ipcMain.handle('open-external', async (e, url) => {
@@ -495,7 +537,7 @@ ipcMain.on('set-accent', (e, color) => {
   try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('accent-changed', accent); } catch {}
 });
 ipcMain.on('toggle-menu', (e) => { if (!isSenderAllowed(e)) return; if (!isRateLimited('toggle')) toggleMenu(); });
-ipcMain.handle('get-theme', (e) => { if (!isSenderAllowed(e)) return currentTheme; return currentTheme; });
+ipcMain.handle('get-theme', (e) => { if (!isSenderAllowed(e)) return null; return currentTheme; });
 
 // ── App lifecycle ─────────────────────────────────────────────────
 app.whenReady().then(() => {
