@@ -1,7 +1,7 @@
 {
   "name": "startorback",
-  "version": "2.0.0",
-  "description": "StartORBack — hardened визуальная замена меню Пуск. CSP+sandbox+rate-limit, без прав админа, только оверлей.",
+  "version": "3.0.0",
+  "description": "StartORBack v3 hardened — CSP, sandbox, fixed System32/SSRF/traversal, 127.0.0.1 only",
   "main": "main.js",
   "author": "StartORBack",
   "license": "MIT",
@@ -11,25 +11,19 @@
     "start": "electron .",
     "preview": "node preview-server.js",
     "dev": "node preview-server.js",
+    "preview:lan": "ALLOW_LAN=1 node preview-server.js",
     "audit": "npm audit --audit-level=high",
-    "pack": "electron-builder --dir"
+    "pack": "npx --yes electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "^45.1.0"
+    "electron": "45.1.0"
   },
+  "dependencies": {},
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
   },
   "overrides": {
     "extract-zip": "^2.0.1"
   },
-  "keywords": [
-    "start-menu",
-    "windows",
-    "electron",
-    "hardened",
-    "csp",
-    "sandbox",
-    "overlay"
-  ]
+  "keywords": ["start-menu", "windows", "electron", "hardened", "csp", "sandbox", "overlay"]
 }
